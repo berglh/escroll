@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -85,7 +86,7 @@ func CheckParams(params RequestBodySearch) bool {
 }
 
 // Search performs the first search, returning the scroll ID and first batch of results
-func Search(search RequestBodySearch) string {
+func Search(search RequestBodySearch) []byte {
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(search.Body))
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{}
@@ -98,7 +99,7 @@ func Search(search RequestBodySearch) string {
 	if err != nil {
 		log.Fatal(err)
 	}
-	return string(b)
+	return b
 }
 
 func main() {
@@ -122,6 +123,16 @@ func main() {
 
 	// Perform the initial search to establish scroll
 	first := Search(esSearch)
-	fmt.Printf("%s\n", first)
+	var respJSON Results
+	if err := json.Unmarshal(first, &respJSON); err != nil {
+		log.Println(err)
+		return
+	}
+	for _, v := range respJSON.Hits.Hits {
+		o, _ := json.Marshal(v.Source)
+		fmt.Printf("%s\n", o)
+	}
+	//scrollID, _ := json.Marshal(respJSON)
+	fmt.Printf("Scroll ID: %s\n", respJSON.ScrollID)
 
 }
