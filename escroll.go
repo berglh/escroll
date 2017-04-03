@@ -19,7 +19,7 @@ type Results struct {
 	}
 }
 
-// Source contains
+// Source is a struct of an event from Elasticsearch
 type Source struct {
 	Source Event `json:"_source"`
 }
@@ -33,33 +33,35 @@ type RequestBodySearch struct {
 	Body        []byte
 }
 
-// Search performs the first search, returning the scroll ID and first batch of results
-func Search(search RequestBodySearch) string {
-	req, err := http.NewRequest("POST", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(search.Body))
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
-	res, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
+// FileOrData reads in from file or data flags and returns bytes for POST body
+func FileOrData(file, data string) []byte {
+	// Determine whether to use file or data for POST body
+	if len(file) > 0 {
+		// If file path is greater null then read in the query JSON file
+		c, fileErr := ioutil.ReadFile(file)
+		if fileErr != nil {
+			fmt.Println(fileErr)
+			os.Exit(1)
+		}
+		return c
+	} else {
+		// Else read in the data flag as the query body, like -d in curl
+		return []byte(data)
 	}
-	defer res.Body.Close()
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return string(b)
 }
 
+// CheckParams checks the flag parameters for errors
 func CheckParams(params RequestBodySearch) bool {
+
 	// Not going to allow delete by query, because, there be dragons
 	if strings.Contains(params.Query, "delete_by_query") == true {
-		fmt.Println("Error: escroll wasn't made to do delete queries ;)")
+		fmt.Println("Error: escroll wasn't made to do delete queries.")
 		return false
 	}
 
 	// No point running if scroll isn't included in the scroll
 	if strings.Contains(params.Query, "_search?scroll=") != true {
-		fmt.Println("Error: The query contains invalid search scroll parameters. eg: /_search?scroll=30s")
+		fmt.Printf("Error: The query %s contains invalid search scroll parameters. Should be like: /_search?scroll=30s\n", params.Query)
 		return false
 	}
 
@@ -82,6 +84,23 @@ func CheckParams(params RequestBodySearch) bool {
 	return true
 }
 
+// Search performs the first search, returning the scroll ID and first batch of results
+func Search(search RequestBodySearch) string {
+	req, err := http.NewRequest("POST", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(search.Body))
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return string(b)
+}
+
 func main() {
 	// Import the flags
 	file := flag.String("f", "", "Path to the search body data file")
@@ -90,25 +109,15 @@ func main() {
 	query := flag.String("q", "/_search?scroll=0s", "Index path and query string")
 	flag.Parse()
 
-	// Populate the esSearch struct with data from flags
+	// Populate the esSearch with data from flags
 	esSearch := RequestBodySearch{Host: fmt.Sprintf("%s", *host), Query: fmt.Sprintf("%s", *query)}
 
+	// Returns the JSON bytes for the search POST
+	esSearch.Body = FileOrData(*file, *data)
+
+	// Checks the flag data for errors
 	if CheckParams(esSearch) != true {
 		os.Exit(1)
-	}
-
-	// Determine whether to use file or data for POST body
-	if len(*file) > 0 {
-		// If file path is greater null then read in the query JSON file
-		c, fileErr := ioutil.ReadFile(*file)
-		if fileErr != nil {
-			fmt.Println(fileErr)
-			return
-		}
-		esSearch.Body = c
-	} else {
-		// Else read in the data flag as the query body, like -d in curl
-		esSearch.Body = []byte(*data)
 	}
 
 	// Perform the initial search to establish scroll
