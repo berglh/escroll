@@ -108,6 +108,7 @@ func main() {
 	data := flag.String("d", "", "The body data input direclty to the command, same as curl")
 	host := flag.String("h", "localhost:9200", "Elasticsearch server and port")
 	query := flag.String("q", "/_search?scroll=0s", "Index path and query string")
+	pretty := flag.Bool("p", false, "Turn on pretty JSON output")
 	flag.Parse()
 
 	// Populate the esSearch with data from flags
@@ -124,14 +125,24 @@ func main() {
 	// Perform the initial search to establish scroll
 	first := Search(esSearch)
 	var respJSON Results
+
+	// Unmarshall the results
 	if err := json.Unmarshal(first, &respJSON); err != nil {
 		log.Println(err)
 		return
 	}
+
+	// Iterate through the mapped JSON and marshall as pretty or lines JSON
 	for _, v := range respJSON.Hits.Hits {
-		o, _ := json.Marshal(v.Source)
-		fmt.Printf("%s\n", o)
+		if *pretty != false {
+			o, _ := json.Marshal(v.Source)
+			fmt.Printf("%s\n", o)
+		} else {
+			o, _ := json.MarshalIndent(v.Source, "", "    ")
+			fmt.Printf("%s\n", o)
+		}
 	}
+
 	//scrollID, _ := json.Marshal(respJSON)
 	fmt.Printf("Scroll ID: %s\n", respJSON.ScrollID)
 
