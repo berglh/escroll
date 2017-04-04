@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -102,6 +103,24 @@ func Search(search RequestBodySearch) []byte {
 	return b
 }
 
+// Scroll performs the paginated scroll searches
+func Scroll(search RequestBodySearch, scrollid []byte) []byte {
+	//fmt.Printf("QUERY: http://%+v/%+v\n\n", search.Host, search.Query)
+	req, err := http.NewRequest("POST", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(scrollid))
+	//req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return b
+}
+
 func main() {
 	// Import the flags
 	file := flag.String("f", "", "Path to the search body data file")
@@ -133,17 +152,54 @@ func main() {
 	}
 
 	// Iterate through the mapped JSON and marshall as pretty or lines JSON
-	for _, v := range respJSON.Hits.Hits {
-		if *pretty != false {
-			o, _ := json.Marshal(v.Source)
-			fmt.Printf("%s\n", o)
-		} else {
-			o, _ := json.MarshalIndent(v.Source, "", "    ")
-			fmt.Printf("%s\n", o)
+	if len(respJSON.Hits.Hits) > 4 {
+		for _, v := range respJSON.Hits.Hits {
+			if *pretty == false {
+				o, _ := json.Marshal(v.Source)
+				fmt.Printf("%s\n", o)
+			} else {
+				o, _ := json.MarshalIndent(v.Source, "", "    ")
+				fmt.Printf("%s\n", o)
+			}
 		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: No Elasticsearch Hits Found!\n")
+		os.Exit(1)
 	}
 
-	//scrollID, _ := json.Marshal(respJSON)
-	fmt.Printf("Scroll ID: %s\n", respJSON.ScrollID)
+	scrollID := []byte(respJSON.ScrollID)
+
+	scroll := []byte("{seed}")
+	scrollNum := 1
+
+	reg := regexp.MustCompile(`.*\/([^\/]+)`)
+	esSearch.Query = reg.ReplaceAllString(esSearch.Query, "${1}&filter_path=hits.hits._source")
+	esSearch.Query = strings.Replace(esSearch.Query, "_search", "_search/scroll", 1)
+
+	for len(scroll) > 4 {
+		scroll = Scroll(esSearch, scrollID)
+		scrollNum++
+		//fmt.Printf("\nScroll Ouptut: %s\n\n", scroll)
+		if err := json.Unmarshal(scroll, &respJSON); err != nil {
+			log.Println(err)
+			return
+		}
+		//scrollID = []byte(respJSON.ScrollID)
+		if scrollNum%100 == 0 {
+			fmt.Fprintf(os.Stderr, "Scroll Searches Completed: %d\n", scrollNum)
+		}
+		for _, v := range respJSON.Hits.Hits {
+			if *pretty == false {
+				o, _ := json.Marshal(v.Source)
+				fmt.Printf("%s\n", o)
+			} else {
+				o, _ := json.MarshalIndent(v.Source, "", "    ")
+				fmt.Printf("%s\n", o)
+			}
+		}
+	}
+	//fmt.Printf("\nScroll Ouptut: %s\n\n", scroll)
+	fmt.Fprintf(os.Stderr, "Total Scroll Searches: %d\n", scrollNum)
+	//fmt.Printf("Scroll ID: %s\n", respJSON.ScrollID)
 
 }
