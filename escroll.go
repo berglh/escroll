@@ -16,6 +16,10 @@ import (
 	"github.com/wsxiaoys/terminal/color"
 )
 
+const (
+	esrcollVersion = "v0.2.2" // escroll version number
+)
+
 // Results wraps up top level search results from Elasticsearch
 type Results struct {
 	ScrollID string `json:"_scroll_id"`
@@ -44,18 +48,18 @@ type RequestSize struct {
 	Size string `json:"size"`
 }
 
-// FileOrData reads in from file or data flags and returns bytes for POST body
-func FileOrData(file, data string) []byte {
-	// Determine whether to use file or data for POST body
-	if len(file) > 0 {
-		// If file path is greater null then read in the query JSON file
+// Data reads in the data flag like curl
+func Data(data string) []byte {
+	// Determine if it's a file by the @prefix like curl
+	if strings.HasPrefix(data, "@") == true {
+		file := strings.TrimPrefix(data, "@")
 		c, err := ioutil.ReadFile(file)
 		if err != nil {
 			Log(Error, err.Error())
 		}
 		return c
 	}
-	// Else read in the data flag as the query body, like -d in curl
+	// Otherwise treat it as raw data
 	return []byte(data)
 }
 
@@ -97,6 +101,12 @@ func Search(search RequestBodySearch) []byte {
 		Log(Error, err.Error())
 	}
 	defer res.Body.Close()
+	// Check the response code
+	if res.StatusCode != 200 {
+		oBytes, _ := ioutil.ReadAll(res.Body)
+		res.Body.Close()
+		Log(Error, fmt.Sprintf("Primary Search Failed: %d, %+v", res.StatusCode, string(oBytes)))
+	}
 	b, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		Log(Error, err.Error())
@@ -115,6 +125,11 @@ func Scroll(search RequestBodySearch, scrollid []byte) []byte {
 		Log(Error, err.Error())
 	}
 	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		oBytes, _ := ioutil.ReadAll(res.Body)
+		res.Body.Close()
+		Log(Error, fmt.Sprintf("Scroll Search Failed: %d, %+v", res.StatusCode, string(oBytes)))
+	}
 	b, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		Log(Error, err.Error())
@@ -124,14 +139,14 @@ func Scroll(search RequestBodySearch, scrollid []byte) []byte {
 
 func main() {
 	// Start of main function
-	fmt.Fprintln(os.Stderr, color.Sprintf("@g%s escroll b0.2.1", logTimestamp()))
+	fmt.Fprintln(os.Stderr, color.Sprintf("@g%s escroll %s", logTimestamp(), esrcollVersion))
 
 	// Import the parameters from flags
-	file := flag.String("f", "", "Path to the search body data file")
-	data := flag.String("d", "", "The body data input direclty to the command, same as curl")
-	host := flag.String("h", "localhost:9200", "Elasticsearch server and port")
+	// file := flag.String("f", "", "Path to the search body data file")
+	server := flag.String("s", "localhost:9200", "Elasticsearch server and port")
 	query := flag.String("q", "/_search?scroll=0s", "Index path and query string")
-	pretty := flag.Bool("p", false, "Turn on pretty JSON output")
+	data := flag.String("d", "", "The query body to send in the POST request.\n\tEmulates the -d/data-ascii flag in curl. Prefixing the string with @ will in the valid file as ASCII encoded. ie.\"@filname.json\"")
+	pretty := flag.Bool("p", false, "Switch to turn on pretty JSON output")
 	Log(Info, "Processing flags and parameters")
 	flag.Parse()
 
@@ -142,10 +157,10 @@ func main() {
 	var scrollTotal int         // Int to capture total number of scrolls
 
 	// Populate the esSearch with data from flags
-	esSearch := RequestBodySearch{Host: fmt.Sprintf("%s", *host), Query: fmt.Sprintf("%s", *query)}
+	esSearch := RequestBodySearch{Host: fmt.Sprintf("%s", *server), Query: fmt.Sprintf("%s", *query)}
 
 	// Returns the JSON bytes used for the initial search POST
-	esSearch.Body = FileOrData(*file, *data)
+	esSearch.Body = Data(*data)
 
 	// Checks the flag data for errors
 	CheckParams(esSearch)
@@ -210,9 +225,12 @@ func main() {
 	scrollNum := 1                        // The scroll number starts at one due to the initial search
 
 	// Munge the query string of the search to hit the scroll API
-	reg := regexp.MustCompile(`.*\/([^\/]+)`)
-	esSearch.Query = reg.ReplaceAllString(esSearch.Query, "${1}&filter_path=hits.hits._source")
+	// reg := regexp.MustCompile(`.*\/([^\/]+)`)
+	reg := regexp.MustCompile(`.*\/(.*\?)([^\/]*(scroll=[\d]+(d|h|m|s|ms|micros|nanos))[^\/]*)`)
+	esSearch.Query = reg.ReplaceAllString(esSearch.Query, "${1}${3}&filter_path=hits.hits._source")
+	// Debug: fmt.Fprintf(os.Stderr, "Query String Regexed: %s\n", esSearch.Query)
 	esSearch.Query = strings.Replace(esSearch.Query, "_search", "_search/scroll", 1)
+	// Debug: fmt.Fprintf(os.Stderr, "Query String Replaced: %s\n", esSearch.Query)
 
 	// Scroll Search Loop
 	for len(scroll) > 4 {
