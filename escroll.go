@@ -139,16 +139,38 @@ func Scroll(search RequestBodySearch, scrollid []byte) []byte {
 
 func main() {
 	// Start of main function
-	fmt.Fprintln(os.Stderr, color.Sprintf("@g%s escroll %s", logTimestamp(), esrcollVersion))
 
 	// Import the parameters from flags
-	// file := flag.String("f", "", "Path to the search body data file")
+	// Replace the server flag with --url
 	server := flag.String("s", "localhost:9200", "Elasticsearch server and port")
+	user := flag.String("user", "user:password", "Not Implemented: User and password for shield protected ES")
+	url := flag.String("url", "http://localhost:9200", "Not Implemented: Elasticsearch resource type, server and port")
 	query := flag.String("q", "/_search?scroll=0s", "Index path and query string")
-	data := flag.String("d", "", "The query body to send in the POST request.\n\tEmulates the -d/data-ascii flag in curl. Prefixing the string with @ will in the valid file as ASCII encoded. ie.\"@filname.json\"")
-	pretty := flag.Bool("p", false, "Switch to turn on pretty JSON output")
-	Log(Info, "Processing flags and parameters")
+	data := flag.String("d", "", "The DSL query body to send in the POST request.\n\tEmulates the -d/data-ascii flag in curl.\n\tPrefix string with @ to read in query DSL file.")
+	pretty := flag.Bool("p", false, "Output events as pretty JSON")
+	version := flag.Bool("v", false, "Print version information")
 	flag.Parse()
+
+	if *version == true {
+		fmt.Fprintf(os.Stderr, "escroll %s\n", esrcollVersion)
+		os.Exit(0)
+	}
+
+	if *url != "http://localhost:9200" {
+		fmt.Fprintf(os.Stderr, "url %s\n", *url)
+		os.Exit(0)
+	}
+
+	if *user != "user:password" {
+		fmt.Fprintf(os.Stderr, "User details are %s\n", *user)
+		os.Exit(0)
+	}
+
+	// Print version number to indicate start
+	fmt.Fprintln(os.Stderr, color.Sprintf("@g%s escroll %s", logTimestamp(), esrcollVersion))
+
+	// Start assigning parameteers and working vars
+	Log(Info, "Processing flags and parameters")
 
 	// Declare variables
 	var requestSize RequestSize // Struct to capture requested scroll size
