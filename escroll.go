@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	esrcollVersion = "v0.2.2" // escroll version number
+	esrcollVersion = "v0.2.3" // escroll version number
 )
 
 // Results wraps up top level search results from Elasticsearch
