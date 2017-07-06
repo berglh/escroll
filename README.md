@@ -1,7 +1,8 @@
 
 ![alt text](docs/images/escroll.png "escroll")
 ---
-[![Build Status](https://travis-ci.org/berglh/escroll.svg?branch=master)](https://travis-ci.org/berglh/escroll)
+[![Build Status](https://travis-ci.org/berglh/escroll.svg?branch=master)](https://travis-ci.org/berglh/escroll)<br />
+
 **escroll** is a command line client written in *Go* that takes the hassle out of scroll searches in elasticsearch. It aims to be;
 
 - *Simple*: make *elasticsearch* scroll searches easy
@@ -18,7 +19,7 @@
   - [Switches](#switches)
 - [Output](#output)
 - [Examples](#examples)
----
+
 
 ## Usage
 
