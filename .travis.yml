@@ -1,0 +1,16 @@
+language: go
+go:
+  - 1.8
+env:
+  - "PATH=/home/travis/gopath/bin:$PATH"
+before_install:
+  - go get github.com/mitchellh/gox
+  - gox -build-toolchain
+  - go get github.com/tcnksm/ghr
+script:
+  - gox -osarch="linux/amd64 linux/386 darwin/amd64 darwin/386 windows/386 windows/amd64" -output="test2/{{.Dir}}-$TRAVIS_TAG-{{.OS}}-{{.Arch}}"
+  - mkdir dist && cd build
+  - 'for i in *.exe; do cp $i escroll.exe; zip ../dist/$(echo $i | sed -e "s/.exe//g").zip escroll.exe; rm escroll.exe; done'
+  - 'for i in $(ls escroll-* | grep -v exe); do cp $i escroll; tar -zcvf ../dist/$i.tar.gz escroll; rm escroll; done'
+  - cd ../
+  - ghr --username berglh --token $GITHUB_TOKEN --replace --prerelease --debug $TRAVIS_TAG dist/
