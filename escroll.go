@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	esrcollVersion = "v0.2.3" // escroll version number
+	esrcollVersion = "v0.2.4" // escroll version number
 )
 
 // Results wraps up top level search results from Elasticsearch
@@ -59,6 +59,11 @@ func Data(data string) []byte {
 	return []byte(data)
 }
 
+// SecDurationFormat takes in seconds and formats it in hours, minutes and seconds
+func SecDurationFormat(duration int) (int, int, int) {
+	return (duration / 1000 / 60) / 60, (duration / 1000 / 60) % 60, (duration / 1000) % 60
+}
+
 // CheckParams checks the flag parameters for errors
 func CheckParams(params RequestBodySearch) {
 
@@ -68,8 +73,16 @@ func CheckParams(params RequestBodySearch) {
 	}
 
 	// No point running if scroll isn't included in the scroll search
+	if params.Query == "" {
+		Log("Error", "No query supplied")
+	}
 	if strings.Contains(params.Query, "_search?scroll=") != true {
-		Log("Error", fmt.Sprintf("The query %s contains invalid search scroll parameters. Should be like: /_search?scroll=30s", params.Query))
+		Log("Error", fmt.Sprintf("The query \"%s\" is missing scroll parameters. Required format: \"/index/_search?scroll=30s&filter_path=hits.total,hits.hits._source,_scroll_id\"", params.Query))
+	}
+
+	// Can't do calculations if hits.total is unavailable  isn't included in the scroll search
+	if strings.Contains(params.Query, "hits.total") != true {
+		Log("Error", fmt.Sprintf("The query \"%s\" is missing \"filter_path=hits.total\" which prevents escroll tracking the number of scrolls correctly", params.Query))
 	}
 
 	// Test connection to host
@@ -87,10 +100,18 @@ func CheckParams(params RequestBodySearch) {
 	// Could do some checking on ES versions here
 }
 
-// Search performs the first search, returning the scroll ID and first batch of results
-func Search(search RequestBodySearch) []byte {
-	req, err := http.NewRequest("POST", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(search.Body))
-	req.Header.Set("Content-Type", "application/json")
+// SearchScroll performs the first query search or additional paginated scroll seraches if the scroll ID is provided
+func SearchScroll(search RequestBodySearch, scrollid []byte) []byte {
+	var req *http.Request
+	var err error
+	if scrollid == nil {
+		// If the scrollid is nil at first, do the initial search
+		req, err = http.NewRequest("GET", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(search.Body))
+		req.Header.Set("Content-Type", "application/json")
+	} else {
+		// Otherwise treat it as a scroll search
+		req, err = http.NewRequest("GET", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(scrollid))
+	}
 	client := &http.Client{}
 	res, err := client.Do(req)
 	// If the response isn't empty, defer close body
@@ -114,45 +135,24 @@ func Search(search RequestBodySearch) []byte {
 	return b
 }
 
-// Scroll performs the paginated scroll searches
-func Scroll(search RequestBodySearch, scrollid []byte) []byte {
-	//fmt.Printf("QUERY: http://%+v/%+v\n\n", search.Host, search.Query)
-	req, err := http.NewRequest("POST", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(scrollid))
-	//req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{}
-	res, err := client.Do(req)
-	// If the response isn't empty, defer close body
-	if res != nil {
-		defer res.Body.Close()
-	}
-	// Exit if there is an error
-	if err != nil {
-		Log("Error", err.Error())
-	}
-	// An error in elasticsearch is still a valid response, check the status code
-	if res.StatusCode != 200 {
-		oBytes, _ := ioutil.ReadAll(res.Body)
-		res.Body.Close()
-		Log("Error", fmt.Sprintf("Scroll Search Failed: %d, %+v", res.StatusCode, string(oBytes)))
-	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		Log("Error", err.Error())
-	}
-	return b
-}
-
 func main() {
 	// Start of main function
-	fmt.Fprintln(os.Stderr, color.Sprintf("@g%s escroll %s", logTimestamp(), esrcollVersion))
 
 	// Import the parameters from flags
 	server := flag.String("s", "localhost:9200", "Elasticsearch server and port")
-	query := flag.String("q", "/_search?scroll=0s", "Index path and query string")
+	query := flag.String("q", "", "Index path and query string. i.e. \"/index/_search?scroll=30s&filter_path=hits.total,hits.hits._source,_scroll_id\"")
 	data := flag.String("d", "", "The query body to send in the POST request.\n\tEmulates the -d/data-ascii flag in curl. Prefixing the string with @ will in the valid file as ASCII encoded. ie.\"@filname.json\"")
 	pretty := flag.Bool("p", false, "Switch to turn on pretty JSON output")
-	Log("Info", "Processing flags and parameters")
+	version := flag.Bool("v", false, "Print version information")
 	flag.Parse()
+
+	if *version == true {
+		fmt.Fprintf(os.Stderr, "escroll %s\n", esrcollVersion)
+		os.Exit(0)
+	} else {
+		fmt.Fprintln(os.Stderr, color.Sprintf("@g%s escroll %s", logTimestamp(), esrcollVersion))
+		Log("Info", "Processing flags and parameters")
+	}
 
 	// Declare variables
 	var requestSize RequestSize // Struct to capture requested scroll size
@@ -193,7 +193,7 @@ func main() {
 	startTime := int(time.Now().UnixNano())
 
 	// Perform the initial search to establish scroll
-	searchResults := Search(esSearch)
+	searchResults := SearchScroll(esSearch, nil)
 
 	// Unmarshall the results
 	if err := json.Unmarshal(searchResults, &respJSON); err != nil {
@@ -241,15 +241,14 @@ func main() {
 		respJSON = nil
 
 		// Perform the scroll search
-		scroll := Scroll(esSearch, scrollID)
+		scroll := SearchScroll(esSearch, scrollID)
 
 		// Track some metrics on the scrolling to form estimates
 		scrollTime := int(time.Now().UnixNano())
 		scrollNum++
-		estimateTimeMs := ((scrollTime - startTime) / 1000000 / scrollNum) * (scrollTotal - scrollNum)
-		eSec := (estimateTimeMs / 1000) % 60
-		eMin := (estimateTimeMs / 1000 / 60) % 60
-		eHrs := (estimateTimeMs / 1000 / 60) / 60
+
+		// Get some useful values to display estimated time
+		eHr, eMin, eSec := SecDurationFormat(((scrollTime - startTime) / 1000000 / scrollNum) * (scrollTotal - scrollNum))
 
 		// Unmarshal the scroll search results
 		if err := json.Unmarshal(scroll, &respJSON); err != nil {
@@ -270,10 +269,15 @@ func main() {
 			}
 
 			// Output escroll progress
-			fmt.Fprintf(os.Stderr, fmt.Sprintf("\r%s Scrolls: [ %d / %d ]  Estimated Time: [ %02d:%02d:%02d ]", logTimestamp(), scrollNum, scrollTotal, eHrs, eMin, eSec))
+			fmt.Fprintf(os.Stderr, fmt.Sprintf("\r%s Scrolls: [ %d / %d ]  Estimated Time: [ %02d:%02d:%02d ]", logTimestamp(), scrollNum, scrollTotal, eHr, eMin, eSec))
 		}
 
 	}
+
+	scrollTime := int(time.Now().UnixNano())
+	tHr, tMin, tSec := SecDurationFormat((scrollTime - startTime) / 1000000)
+
+	fmt.Fprintf(os.Stderr, fmt.Sprintf("\n%s Completed %d scrolls in: %02d:%02d:%02d", logTimestamp(), scrollTotal, tHr, tMin, tSec))
 
 	// Successful end of escroll
 	Log("NlnOK", "Scroll search finished")

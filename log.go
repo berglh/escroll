@@ -65,7 +65,7 @@ func Log(level, message string) {
 	if t == "newline" {
 		color.Fprintln(os.Stderr, color.Sprintf("\n%s%s %s: %s", c, logTimestamp(), level, message))
 	}
-	if level == Error {
+	if level == "Error" {
 		os.Exit(1)
 	}
 }
