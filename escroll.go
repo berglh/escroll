@@ -156,7 +156,6 @@ func NextScroll(search PrimarySearchRequest) []byte {
 	var err error
 	// Build the http request using the search request struct and scroll body
 	req, err = http.NewRequest("GET", fmt.Sprintf("%+v", search.URI.String()), bytes.NewBuffer(search.ScrollBody))
-
 	if err != nil {
 		Log("Error", err.Error())
 	}
@@ -171,7 +170,6 @@ func main() {
 
 	// Import the parameters from flags
 	scrolluri := flag.String("url", "", "Elasticsearch scroll search URI\n\ti.e. \"http://localhost:9200/_search/scroll=30s\"")
-
 	data := flag.String("d", "", "The query body to send in the POST request.\n\tEmulates the -d/data-ascii flag in curl. Prefixing the string with @ will in the valid file as ASCII encoded. ie.\"@filname.json\"")
 	pretty := flag.Bool("p", false, "Switch to turn on pretty JSON output")
 	version := flag.Bool("v", false, "Print version information")
