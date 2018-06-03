@@ -5,7 +5,6 @@ env:
   - "PATH=/home/travis/gopath/bin:$PATH"
 before_install:
   - go get github.com/mitchellh/gox
-  - gox -build-toolchain
   - go get github.com/tcnksm/ghr
 script:
   - gox -osarch="linux/amd64 linux/386 darwin/amd64 darwin/386 windows/386 windows/amd64" -output="test2/{{.Dir}}-$TRAVIS_TAG-{{.OS}}-{{.Arch}}"
