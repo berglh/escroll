@@ -26,8 +26,7 @@
 #### Arguments
 Flag | Example | Description
 :---:|:----|:---
-`-s` | `localhost:9200` | The elasticsearch node and http port number
-`-q` | `'index/type/_search?scroll=10s'` | The query segment of the URI. The scroll time-out is mandatory.
+`-url` | `http://localhost:9200/index/_search?scroll=10s` | The elasticsearch node, port number and query segments of the URI. Scroll time-out is mandatory.
 `-d` | *`query string`* or `@query.json` | The query request body DSL, prefix string with `@` for DSL query file.
 
 #### Switches
@@ -42,7 +41,11 @@ Flag | Description
 
 Information about the progress of the scroll search is sent to `stderr`.
 
-**escroll** outputs the data only inside the `hits.hits._source[]` results array as **JSON** *lines* to `stdout`. All data on `stdout` is actual event data from elasticsearch to be redirected to a file or piped to another process:
+**escroll** outputs the data only inside the `hits.hits._source[]` results array as **JSON** *lines* to `stdout`. 
+
+The primary purpose of this tool is to extract event payload data, not for *elasticsearch* index backup. This means that `hits._index`, `hits._type`, `hits._id`, `hits._score` fields along with the search statistic are not included in the scroll output to `stdout`.
+
+All data on `stdout` is actual event data from *elasticsearch* to be redirected to a file or piped to another process:
 
 ```
 {"user" : "berg", "@timestamp" : "2017-04-13T14:41:12", "message": "trying out escroll"}
@@ -50,7 +53,7 @@ Information about the progress of the scroll search is sent to `stderr`.
 {"user" : "berg", "@timestamp" : "2017-04-13T14:42:58", "message": "these JSON lines"}
 ```
 
-The event output can also be *pretty* **JSON** formatted, similar to ruby debug format in *logstash*:
+The event output can also be *pretty* **JSON** formatted, similar to ruby debug format in *logstash* but in valid **JSON**:
 ```
 {
     "user" {
@@ -71,13 +74,13 @@ The event output can also be *pretty* **JSON** formatted, similar to ruby debug 
 A basic query with the query request body as a string:
 
 ```
-~$ escroll -s esnode:9200 -q 'twitter/tweet/_search?scroll=30s' -d '{"query":{"term":{"user":"berg"}}}'
+~$ escroll -url 'http://esnode:9200/twitter/tweet/_search?scroll=30s' -d '{"query":{"term":{"user":"berg"}}}'
 ```
 
 A basic query with the query request body as an input file with size specified:
 
 ```
-~$ escroll -s esnode:9200 -q 'index/_search?scroll=1m' -d @query.json
+~$ escroll -url 'http://esnode:9200/index/_search?scroll=1m' -d @query.json
 ```
 query.json contents:
 ```

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	esrcollVersion = "v0.2.4" // escroll version number
+	esrcollVersion = "v0.3.0" // escroll version number
 )
 
 // Results wraps up top level search results from Elasticsearch
@@ -33,10 +33,17 @@ type Results struct {
 // Event contains a map of arbritrary JSON in the ES Hits.Hits object
 type Event map[string]interface{}
 
-// RequestBodySearch is a struct
-type RequestBodySearch struct {
-	Host, Query string
-	Body        []byte
+// PrimarySearchRequest is a struct to collect all the elements for scroll search requests
+type PrimarySearchRequest struct {
+	URI        *url.URL
+	SearchBody []byte
+	ScrollBody []byte
+}
+
+// ScrollRequestBody is the body used for conducting the scroll searches
+type ScrollRequestBody struct {
+	Scroll   string `json:"scroll"`
+	ScrollID string `json:"scroll_id"`
 }
 
 // RequestSize captures the size of the scroll search, if specified
@@ -44,8 +51,8 @@ type RequestSize struct {
 	Size string `json:"size"`
 }
 
-// Data reads in the data flag like curl
-func Data(data string) []byte {
+// ParseData reads in the data flag like curl
+func ParseData(data string) []byte {
 	// Determine if it's a file by the @prefix like curl
 	if strings.HasPrefix(data, "@") == true {
 		file := strings.TrimPrefix(data, "@")
@@ -65,28 +72,31 @@ func SecDurationFormat(duration int) (int, int, int) {
 }
 
 // CheckParams checks the flag parameters for errors
-func CheckParams(params RequestBodySearch) {
+func CheckParams(params PrimarySearchRequest) {
 
 	// Not going to allow delete by query, because, there be dragons
-	if strings.Contains(params.Query, "delete_by_query") == true {
+	if strings.Contains(params.URI.RawQuery, "delete_by_query") == true {
 		Log("Error", "Delete_by_query is blocked by escroll")
 	}
 
-	// No point running if scroll isn't included in the scroll search
-	if params.Query == "" {
-		Log("Error", "No query supplied")
+	// Check the query contains the required parameters for a valid scroll search
+	if params.URI.RawQuery == "" {
+		Log("Error", "No query parameters for scroll search")
 	}
-	if strings.Contains(params.Query, "_search?scroll=") != true {
-		Log("Error", fmt.Sprintf("The query \"%s\" is missing scroll parameters. Required format: \"/index/_search?scroll=30s&filter_path=hits.total,hits.hits._source,_scroll_id\"", params.Query))
+	if strings.Contains(params.URI.Path, "_search") != true {
+		Log("Error", fmt.Sprintf("The path \"%s\" is missing the search method parameter. Required format: \"/index/_search\"", params.URI.Path))
 	}
-
-	// Can't do calculations if hits.total is unavailable  isn't included in the scroll search
-	if strings.Contains(params.Query, "hits.total") != true {
-		Log("Error", fmt.Sprintf("The query \"%s\" is missing \"filter_path=hits.total\" which prevents escroll tracking the number of scrolls correctly", params.Query))
+	scrollWait, ok := params.URI.Query()["scroll"]
+	if !ok || len(scrollWait) < 1 {
+		Log("Error", fmt.Sprintf("The query \"%s\" is missing scroll parameters. Required format: \"/index/_search?scroll=30s\"", params.URI.RawQuery))
+	}
+	// Can't do calculations if hits.total is unavailable when using the filter_path feature
+	if strings.Contains(params.URI.RawQuery, "filter_path") == true && strings.Contains(params.URI.RawQuery, "hits.total") != true {
+		Log("Error", fmt.Sprintf("This query \"%s\" that contains filter_path is missing \"filter_path=hits.total\" which prevents escroll tracking the number of scrolls correctly", params.URI.RawQuery))
 	}
 
 	// Test connection to host
-	req, err := http.NewRequest("GET", fmt.Sprintf("http://%+v", params.Host), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%+v://%+v", params.URI.Scheme, params.URI.Host), nil)
 	client := &http.Client{}
 	res, err := client.Do(req)
 	if err != nil {
@@ -100,18 +110,8 @@ func CheckParams(params RequestBodySearch) {
 	// Could do some checking on ES versions here
 }
 
-// SearchScroll performs the first query search or additional paginated scroll seraches if the scroll ID is provided
-func SearchScroll(search RequestBodySearch, scrollid []byte) []byte {
-	var req *http.Request
-	var err error
-	if scrollid == nil {
-		// If the scrollid is nil at first, do the initial search
-		req, err = http.NewRequest("GET", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(search.Body))
-		req.Header.Set("Content-Type", "application/json")
-	} else {
-		// Otherwise treat it as a scroll search
-		req, err = http.NewRequest("GET", fmt.Sprintf("http://%+v/%+v", search.Host, search.Query), bytes.NewBuffer(scrollid))
-	}
+// SearchRequest does the actual http client request against Elasticsearch
+func SearchRequest(req *http.Request) []byte {
 	client := &http.Client{}
 	res, err := client.Do(req)
 	// If the response isn't empty, defer close body
@@ -126,7 +126,7 @@ func SearchScroll(search RequestBodySearch, scrollid []byte) []byte {
 	if res.StatusCode != 200 {
 		oBytes, _ := ioutil.ReadAll(res.Body)
 		res.Body.Close()
-		Log("Error", fmt.Sprintf("Primary Search Failed: %d, %+v", res.StatusCode, string(oBytes)))
+		Log("Error", fmt.Sprintf("Scroll Search Error: %d, %+v", res.StatusCode, string(oBytes)))
 	}
 	b, err := ioutil.ReadAll(res.Body)
 	if err != nil {
@@ -135,16 +135,58 @@ func SearchScroll(search RequestBodySearch, scrollid []byte) []byte {
 	return b
 }
 
+// ScrollSearch prepares the http request for the inital scroll search
+func ScrollSearch(search PrimarySearchRequest) []byte {
+	var req *http.Request
+	var err error
+	// Build the http request using the search request struct and query body
+	req, err = http.NewRequest("GET", fmt.Sprintf("%+v", search.URI.String()), bytes.NewBuffer(search.SearchBody))
+	if err != nil {
+		Log("Error", err.Error())
+	}
+	// All payloads must be explicitly defined as of ESv6
+	req.Header.Add("Content-Type", "application/json")
+	b := SearchRequest(req)
+	return b
+}
+
+// NextScroll prepares the http request for the paginated scrolls
+func NextScroll(search PrimarySearchRequest) []byte {
+	var req *http.Request
+	var err error
+	// Build the http request using the search request struct and scroll body
+	req, err = http.NewRequest("GET", fmt.Sprintf("%+v", search.URI.String()), bytes.NewBuffer(search.ScrollBody))
+	if err != nil {
+		Log("Error", err.Error())
+	}
+	// All payloads must be explicitly defined as of ESv6
+	req.Header.Add("Content-Type", "application/json")
+	b := SearchRequest(req)
+	return b
+}
+
 func main() {
 	// Start of main function
 
 	// Import the parameters from flags
-	server := flag.String("s", "localhost:9200", "Elasticsearch server and port")
-	query := flag.String("q", "", "Index path and query string. i.e. \"/index/_search?scroll=30s&filter_path=hits.total,hits.hits._source,_scroll_id\"")
+	scrolluri := flag.String("url", "", "Elasticsearch scroll search URI\n\ti.e. \"http://localhost:9200/_search/scroll=30s\"")
 	data := flag.String("d", "", "The query body to send in the POST request.\n\tEmulates the -d/data-ascii flag in curl. Prefixing the string with @ will in the valid file as ASCII encoded. ie.\"@filname.json\"")
 	pretty := flag.Bool("p", false, "Switch to turn on pretty JSON output")
 	version := flag.Bool("v", false, "Print version information")
 	flag.Parse()
+
+	// Parse in the scroll URL using the net/url package
+	if scrolluri != nil {
+		if strings.Contains(*scrolluri, "http") != true {
+			*scrolluri = "http://" + *scrolluri
+		}
+		_, err := url.Parse(*scrolluri)
+		if err != nil {
+			Log("Error", fmt.Sprintf("Malformed URL: %s", err))
+		}
+	} else {
+		Log("Error", "No URL parameter supplied")
+	}
 
 	if *version == true {
 		fmt.Fprintf(os.Stderr, "escroll %s\n", esrcollVersion)
@@ -155,23 +197,22 @@ func main() {
 	}
 
 	// Declare variables
-	var requestSize RequestSize // Struct to capture requested scroll size
-	respJSON := &Results{}      // Pointer to capture the JSON response
-	var scrollSize int          // Int to capture actual scroll size
-	var scrollTotal int         // Int to capture total number of scrolls
-	scrollNum := 1              // Seed scroll number variable to track scroll iterations
+	var requestSize RequestSize       // Struct to capture requested scroll size
+	var esSearch PrimarySearchRequest // Search request paramaters
+	respJSON := &Results{}            // Pointer to capture the JSON response
+	var scrollSize int                // Int to capture actual scroll size
+	var scrollTotal int               // Int to capture total number of scrolls
+	scrollNum := 1                    // Seed scroll number variable to track scroll iterations
 
 	// Populate the esSearch with data from flags
-	esSearch := RequestBodySearch{Host: fmt.Sprintf("%s", *server), Query: fmt.Sprintf("%s", *query)}
-
-	// Returns the JSON bytes used for the initial search POST
-	esSearch.Body = Data(*data)
+	esSearch.URI, _ = url.Parse(*scrolluri)
+	esSearch.SearchBody = ParseData(*data)
 
 	// Checks the flag data for errors
 	CheckParams(esSearch)
 
 	// Unmarshall the request query JSON to determine the scroll size
-	if err := json.Unmarshal(esSearch.Body, &requestSize); err != nil {
+	if err := json.Unmarshal(esSearch.SearchBody, &requestSize); err != nil {
 		// If unable to Unmarshal, it's probably not going to work as a query
 		Log("Error", fmt.Sprintf("Could not unmarhsal the search body: %s", err))
 	} else {
@@ -193,7 +234,7 @@ func main() {
 	startTime := int(time.Now().UnixNano())
 
 	// Perform the initial search to establish scroll
-	searchResults := SearchScroll(esSearch, nil)
+	searchResults := ScrollSearch(esSearch)
 
 	// Unmarshall the results
 	if err := json.Unmarshal(searchResults, &respJSON); err != nil {
@@ -225,14 +266,24 @@ func main() {
 		Log("Error", "No Elasticsearch Hits Found")
 	}
 
-	scrollID := []byte(respJSON.ScrollID) // Capture the scroll ID to perform scrolling
+	// Build the scroll request body from the response of the first search
+	// This replaces the legacy approach where only the scrollID comprises the payload body in v0.2.4
+	scrollBody, err := json.Marshal(ScrollRequestBody{ScrollID: respJSON.ScrollID, Scroll: strings.Join(esSearch.URI.Query()["scroll"], ", ")})
+	if err != nil {
+		Log("Error", err.Error())
+		return
+	}
+	// Assign the body to the search struct element
+	esSearch.ScrollBody = []byte(scrollBody)
 
 	// Modification of the body query search to be syntactically correct for the scroll API
-	// This regex groups filter paths and _source filtering, however _source filter is not recognised by scroll API
-	// Future Improvement: Need to test senarios where the order of query string items are shuffled around
-	reg := regexp.MustCompile(`.*\/(.*\?)([^\/]*(scroll=[\d]+(d|h|m|s|ms|micros|nanos))(&filter_path=[^&]+)?(&_source=[^&]*)?)`)
-	esSearch.Query = reg.ReplaceAllString(esSearch.Query, "${1}${3}${5}")
-	esSearch.Query = strings.Replace(esSearch.Query, "_search", "_search/scroll", 1)
+	// This block has replaced the old regex method and references the query parameters directly after v0.2.4
+	esSearch.URI.Path = "/_search/scroll"
+	q, _ := url.ParseQuery(esSearch.URI.RawQuery)
+	q.Del("scroll")
+	q.Del("_source")
+	esSearch.URI.RawQuery = q.Encode()
+	//Log("Info", fmt.Sprintf("ScrollURL: %+v\nScrollQuery: %+v\nScrollPath: %+v\n", esSearch.URI, esSearch.URI.RawQuery, esSearch.URI.Path))
 
 	// Scroll Search Loop
 	for len(respJSON.Hits.Hits) > 4 {
@@ -241,7 +292,7 @@ func main() {
 		respJSON = nil
 
 		// Perform the scroll search
-		scroll := SearchScroll(esSearch, scrollID)
+		scroll := NextScroll(esSearch)
 
 		// Track some metrics on the scrolling to form estimates
 		scrollTime := int(time.Now().UnixNano())
